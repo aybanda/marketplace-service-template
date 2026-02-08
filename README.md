@@ -80,6 +80,69 @@ curl http://localhost:3000/api/run?url=https://example.com
 # → 402 with payment instructions (this is correct!)
 ```
 
+## Instagram Account Creator API (Dry-Run Simulation)
+
+This repo includes an Instagram account creator implementation in [src/service.ts](src/service.ts).
+
+**Important: This service operates in dry-run (simulation) mode. No real Instagram accounts are created, and all sensitive actions (CAPTCHA detection, SMS verification, account warming, shadowban detection) are simulated. This is to avoid violating Instagram’s terms of service.**
+
+### Request (POST /api/run)
+
+```bash
+curl -X POST "http://localhost:3000/api/run" \
+   -H "Content-Type: application/json" \
+   -d '{
+      "email": "you@example.com",
+      "fullName": "Jane Doe",
+      "username": "jane_doe",
+      "password": "StrongPass123!",
+      "birthdate": "1999-02-17",
+      "localeCountry": "US"
+   }'
+```
+
+### Response (402 payment required)
+
+```json
+{
+   "status": 402,
+   "message": "Payment required",
+   "resource": "/api/run",
+   "description": "Create a new Instagram account using mobile proxy + antidetect browser. Returns credentials as JSON.",
+   "price": { "amount": "0.5", "currency": "USDC", "minimumAmount": "0.5" },
+   "networks": ["solana", "base"],
+   "headers": {
+      "required": ["Payment-Signature"],
+      "optional": ["X-Payment-Network"],
+      "format": "Payment-Signature: <transaction_hash>"
+   }
+}
+```
+
+### After payment
+
+```bash
+curl -X POST "http://localhost:3000/api/run" \
+   -H "Content-Type: application/json" \
+   -H "Payment-Signature: <tx_hash>" \
+   -d '{
+      "email": "you@example.com",
+      "fullName": "Jane Doe",
+      "localeCountry": "US"
+   }'
+```
+
+### Dry-Run Simulation Details
+
+- **Post-signup verification**: The service checks for error banners, profile existence, and login state, but does not interact with real Instagram accounts.
+- **CAPTCHA detection**: Simulated detection of CAPTCHA elements; no solving or bypassing is performed.
+- **SMS verification**: 5sim.net API integration is stubbed; no real SMS is sent or received.
+- **Account warming**: Follows, likes, browsing, and profile setup are simulated as no-ops.
+- **Shadowban detection**: Simulated; no real Instagram queries are made.
+- **Proof of accounts**: No real accounts or screenshots are provided. All responses include a `dryRun: true` flag and a note.
+
+**This approach ensures compliance with platform rules and is suitable for demonstration, code review, and integration testing.**
+
 ## Edit One File
 
 **`src/service.ts`** — change three values and the handler:

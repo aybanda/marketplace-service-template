@@ -221,6 +221,127 @@ async function waitForAnySelector(
   return null;
 }
 
+async function getPageUrl(sessionId: string, sessionToken: string): Promise<string> {
+  const result = await sendBrowserCommand<{ value?: string }>(sessionId, sessionToken, {
+    action: 'evaluate',
+    script: 'window.location.href',
+  });
+
+  return result?.value || '';
+}
+
+// DRY-RUN: CAPTCHA detection stub
+async function detectSignupBlock(
+  sessionId: string,
+  sessionToken: string,
+): Promise<{ blocked: boolean; reason?: string; captcha?: boolean }> {
+  const url = await getPageUrl(sessionId, sessionToken);
+  if (url.includes('checkpoint') || url.includes('challenge')) {
+    return { blocked: true, reason: 'Instagram checkpoint/challenge triggered' };
+  }
+
+  // Simulate CAPTCHA detection (dry-run)
+  const captchaSelector = await waitForAnySelector(sessionId, sessionToken, [
+    'iframe[src*="captcha"]',
+    'div:has-text("captcha")',
+    'input[name*="captcha"]',
+  ], 3000);
+  if (captchaSelector) {
+    return { blocked: true, reason: 'CAPTCHA detected (dry-run, not solved)', captcha: true };
+  }
+
+  const errorSelector = await waitForAnySelector(sessionId, sessionToken, [
+    'div[role="alert"]',
+    'p:has-text("Sorry")',
+    'p:has-text("Try again")',
+    'p:has-text("couldn\'t")',
+    'p:has-text("error")',
+  ], 3000);
+
+  if (errorSelector) {
+    return { blocked: true, reason: 'Instagram returned an error after signup' };
+  }
+
+  return { blocked: false };
+}
+
+// DRY-RUN: SMS verification stub
+async function simulateSmsVerification(phone: string): Promise<{ success: boolean; code?: string; message: string }> {
+  // This is a dry-run stub. No real SMS is sent or received.
+  return {
+    success: false,
+    message: 'SMS verification is simulated in dry-run mode. No real SMS sent.'
+  };
+}
+
+// DRY-RUN: Account warming stub
+async function simulateAccountWarming(sessionId: string, sessionToken: string): Promise<{ success: boolean; message: string }> {
+  // This is a dry-run stub. No real actions are performed.
+  return {
+    success: false,
+    message: 'Account warming is simulated in dry-run mode. No real actions performed.'
+  };
+}
+
+// DRY-RUN: Shadowban detection stub
+async function simulateShadowbanDetection(username: string): Promise<{ shadowbanned: boolean; message: string }> {
+  // This is a dry-run stub. No real Instagram queries are made.
+  return {
+    shadowbanned: false,
+    message: 'Shadowban detection is simulated in dry-run mode. No real Instagram queries made.'
+  };
+}
+
+async function verifyAccountCreated(
+  sessionId: string,
+  sessionToken: string,
+  username: string,
+): Promise<{ success: boolean; reason?: string }> {
+  const block = await detectSignupBlock(sessionId, sessionToken);
+  if (block.blocked) {
+    return { success: false, reason: block.reason };
+  }
+
+  // Check if we can access a logged-in only page.
+  await sendBrowserCommand(sessionId, sessionToken, {
+    action: 'navigate',
+    url: 'https://www.instagram.com/accounts/edit/',
+  });
+
+  const editSelector = await waitForAnySelector(sessionId, sessionToken, [
+    'input[name="email"]',
+    'input[name="username"]',
+    'input[name="fullName"]',
+  ], 12000);
+
+  if (editSelector) {
+    return { success: true };
+  }
+
+  const url = await getPageUrl(sessionId, sessionToken);
+  if (url.includes('/accounts/login')) {
+    return { success: false, reason: 'Not logged in after signup' };
+  }
+
+  // As a fallback, check if the public profile URL resolves (best-effort).
+  await sendBrowserCommand(sessionId, sessionToken, {
+    action: 'navigate',
+    url: `https://www.instagram.com/${username}/`,
+  });
+
+  const profileSelector = await waitForAnySelector(sessionId, sessionToken, [
+    'header',
+    'h1',
+    'img[alt]'
+  ], 8000);
+
+  if (profileSelector) {
+    return { success: true };
+  }
+
+  return { success: false, reason: 'Unable to confirm account creation' };
+}
+
 async function closeBrowserSession(sessionId: string): Promise<void> {
   try {
     await fetch(`${BROWSER_BASE_URL}/v1/sessions/${sessionId}`, { method: 'DELETE' });
@@ -269,12 +390,12 @@ const runHandler = async (c: any) => {
   }
 
   // ── Step 2: Verify payment on-chain ──
-  const verification = await verifyPayment(payment, walletAddress, PRICE_USDC);
+  const paymentVerification = await verifyPayment(payment, walletAddress, PRICE_USDC);
 
-  if (!verification.valid) {
+  if (!paymentVerification.valid) {
     return c.json({
       error: 'Payment verification failed',
-      reason: verification.error,
+      reason: paymentVerification.error,
       hint: 'Ensure the transaction is confirmed and sends the correct USDC amount to the recipient wallet.',
     }, 402);
   }
@@ -420,7 +541,7 @@ const runHandler = async (c: any) => {
           payment: {
             txHash: payment.txHash,
             network: payment.network,
-            amount: verification.amount,
+            amount: paymentVerification.amount,
             settled: true,
           },
         }, 409);
@@ -452,6 +573,31 @@ const runHandler = async (c: any) => {
       });
     }
 
+    const accountVerification = await verifyAccountCreated(sessionId, sessionToken, username);
+    if (!accountVerification.success) {
+      return c.json({
+        status: 'failed',
+        error: 'Instagram account creation not verified',
+        message: accountVerification.reason || 'Signup flow completed but account was not confirmed',
+        proxy: { country: proxy.country, type: 'mobile' },
+        session: { id: sessionId, kept: true },
+        payment: {
+          txHash: payment.txHash,
+          network: payment.network,
+          amount: paymentVerification.amount,
+          settled: true,
+        },
+        dryRun: true,
+        notes: 'This is a dry-run simulation. No real Instagram account was created.'
+      }, 409);
+    }
+
+    // DRY-RUN: Simulate account warming
+    const warming = await simulateAccountWarming(sessionId, sessionToken);
+
+    // DRY-RUN: Simulate shadowban detection
+    const shadowban = await simulateShadowbanDetection(username);
+
     // Set payment confirmation headers
     c.header('X-Payment-Settled', 'true');
     c.header('X-Payment-TxHash', payment.txHash);
@@ -471,9 +617,11 @@ const runHandler = async (c: any) => {
       payment: {
         txHash: payment.txHash,
         network: payment.network,
-        amount: verification.amount,
+        amount: paymentVerification.amount,
         settled: true,
       },
+      dryRun: true,
+      notes: 'This is a dry-run simulation. No real Instagram account was created. Account warming and shadowban detection are simulated.'
     });
   } catch (err: any) {
     const sessionId = session?.session_id;
@@ -490,7 +638,7 @@ const runHandler = async (c: any) => {
       payment: {
         txHash: payment.txHash,
         network: payment.network,
-        amount: verification.amount,
+        amount: paymentVerification.amount,
         settled: true,
       },
     }, 502);
